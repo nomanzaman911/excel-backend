@@ -1,13 +1,13 @@
 {
-  "name": "excel-app",
+  "name": "excel-backend",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "exceljs": "^4.3.0",
-    "express": "^4.18.2"
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "qs": "^6.11.0"
   }
 }
