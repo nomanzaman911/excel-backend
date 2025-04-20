@@ -1,4 +1,4 @@
-
+require('dotenv').config();
 //const TENANT_ID = "6940843a-674d-4941-9ca2-dc5603f278df";
 //const CLIENT_ID = "53f1b63e-e169-4121-a255-c0a966ca514e";
 //const CLIENT_SECRET = "qmB8Q~phRIvnOQl5R5WHcLxu3~by0Z2pkqGx9cAq";
@@ -13,7 +13,7 @@ const USER_EMAIL = "nomanzaman@outlook.com";
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-require('dotenv').config();
+
 
 const app = express();
 const port = process.env.PORT || 3000;
