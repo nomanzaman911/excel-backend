@@ -1,82 +1,53 @@
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+require('dotenv').config();
 
-import express from 'express';
-import axios from 'axios';
-import bodyParser from 'body-parser';
-import dotenv from 'dotenv';
-
-dotenv.config();
 const app = express();
-app.use(bodyParser.json());
+app.use(cors());
 
+const PORT = process.env.PORT || 3000;
 
-
-
-
-const {
-  CLIENT_ID,
-  TENANT_ID,
-  CLIENT_SECRET,
-  USER_EMAIL,
-  EXCEL_FILE_NAME
-} = process.env;
-
-// Get access token
+// Get access token using Microsoft identity platform (client credentials flow)
 async function getAccessToken() {
-  const response = await axios.post(
-    `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
-    new URLSearchParams({
-      client_id: CLIENT_ID,
-      scope: 'https://graph.microsoft.com/.default',
-      client_secret: CLIENT_SECRET,
-      grant_type: 'client_credentials',
-    }),
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+  const url = 'https://login.microsoftonline.com/' + process.env.TENANT_ID + '/oauth2/v2.0/token';
+  const params = new URLSearchParams();
+  params.append('client_id', process.env.CLIENT_ID);
+  params.append('scope', 'https://graph.microsoft.com/.default');
+  params.append('client_secret', process.env.CLIENT_SECRET);
+  params.append('grant_type', 'client_credentials');
+
+  const response = await axios.post(url, params);
   return response.data.access_token;
 }
 
-// Get file ID by file name
-async function getExcelFileId(token) {
-  const response = await axios.get(
-    `https://graph.microsoft.com/v1.0/users/${USER_EMAIL}/drive/root/children`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+app.get('/calculate', async (req, res) => {
+  const quantity = req.query.quantity || 1;
 
-  const file = response.data.value.find(f => f.name === EXCEL_FILE_NAME);
-  if (!file) throw new Error("Excel file not found in OneDrive.");
-  return file.id;
-}
-
-// POST or GET /calculate
-app.all('/calculate', async (req, res) => {
   try {
-    const quantity = req.method === 'POST' ? req.body.quantity : req.query.quantity;
-    if (!quantity) return res.status(400).json({ error: 'Missing quantity' });
+    const accessToken = await getAccessToken();
 
-    const token = await getAccessToken();
-    const fileId = await getExcelFileId(token);
-
-    // Write quantity to A2
+    // Update cell A2 in the Excel file
     await axios.patch(
-      `https://graph.microsoft.com/v1.0/users/${USER_EMAIL}/drive/items/${fileId}/workbook/worksheets('Sheet1')/range(address='A2')`,
-      { values: [[quantity]] },
-      { headers: { Authorization: `Bearer ${token}` } }
+      `https://graph.microsoft.com/v1.0/users/nomanzaman@outlook.com/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A2')`,
+      { values: [[parseInt(quantity)]] },
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    // Read result from B2
-    const resultRes = await axios.get(
-      `https://graph.microsoft.com/v1.0/users/${USER_EMAIL}/drive/items/${fileId}/workbook/worksheets('Sheet1')/range(address='B2')`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    // Read calculated value from cell B2
+    const response = await axios.get(
+      `https://graph.microsoft.com/v1.0/users/nomanzaman@outlook.com/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='B2')`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    const result = resultRes.data.values?.[0]?.[0] || null;
-    res.json({ result });
-
-  } catch (err) {
-    console.error('Error:', err.response?.data || err.message);
+    const calculatedValue = response.data.values[0][0];
+    res.json({ result: calculatedValue });
+  } catch (error) {
+    console.error('Error:', error.response?.data || error.message);
     res.status(500).json({ error: 'Failed to calculate result' });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
