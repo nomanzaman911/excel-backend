@@ -1,68 +1,67 @@
 const express = require('express');
 const axios = require('axios');
-const qs = require('qs');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
-app.use(cors()); // ✅ Allow frontend access from other domains
+const port = process.env.PORT || 3000;
 
-const PORT = process.env.PORT || 3000;
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-// Environment variables (set in Render)
-const tenantId = process.env.TENANT_ID;
-const clientId = process.env.CLIENT_ID;
-const clientSecret = process.env.CLIENT_SECRET;
-const excelFileId = process.env.EXCEL_FILE_ID;
+// Environment variables from Render (or .env locally)
+const {
+  TENANT_ID,
+  CLIENT_ID,
+  CLIENT_SECRET,
+  EXCEL_FILE_ID,
+  USER_EMAIL // The Microsoft account email where the Excel is stored
+} = process.env;
 
-const getAccessToken = async () => {
-  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+// Function to get access token
+async function getAccessToken() {
+  const url = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
+  const params = new URLSearchParams();
+  params.append('grant_type', 'client_credentials');
+  params.append('client_id', CLIENT_ID);
+  params.append('client_secret', CLIENT_SECRET);
+  params.append('scope', 'https://graph.microsoft.com/.default');
 
-  const data = qs.stringify({
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: 'https://graph.microsoft.com/.default'
-  });
-
-  const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded'
-  };
-
-  const response = await axios.post(url, data, { headers });
+  const response = await axios.post(url, params);
   return response.data.access_token;
-};
+}
 
+// Route to update Excel cell and get calculated result
 app.get('/calculate', async (req, res) => {
-  const quantity = req.query.quantity || '1';
+  const quantity = req.query.quantity;
 
   try {
-    const accessToken = await getAccessToken();
-
-    const baseURL = `https://graph.microsoft.com/v1.0/me/drive/items/${excelFileId}/workbook/worksheets('Sheet1')`;
+    const token = await getAccessToken();
 
     // Update cell A2 with quantity
     await axios.patch(
-      `${baseURL}/range(address='A2')`,
+      `https://graph.microsoft.com/v1.0/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='A2')`,
       { values: [[quantity]] },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    // Read result from B2
+    // Read result from cell B2 (assumes your formula is there)
     const response = await axios.get(
-      `${baseURL}/range(address='B2')`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      `https://graph.microsoft.com/v1.0/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='B2')`,
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    const result = response.data.values[0][0];
-    res.json({ result });
+    const calculatedValue = response.data.values[0][0];
 
-  } catch (error) {
-    console.error('Error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Calculation failed' });
+    res.json({ result: calculatedValue });
+  } catch (err) {
+    console.error('Error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to calculate result' });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start server
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
