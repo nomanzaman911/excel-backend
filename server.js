@@ -1,10 +1,16 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const bodyParser = require('body-parser');
 
+import express from 'express';
+import axios from 'axios';
+import bodyParser from 'body-parser';
+import dotenv from 'dotenv';
+
+dotenv.config();
 const app = express();
 app.use(bodyParser.json());
+
+
+
+
 
 const {
   CLIENT_ID,
