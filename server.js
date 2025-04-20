@@ -1,46 +1,76 @@
 const express = require('express');
-const cors = require('cors');
-const ExcelJS = require('exceljs');
-const path = require('path');
-const fs = require('fs');
-
+const axios = require('axios');
+const qs = require('qs');
 const app = express();
-app.use(cors());
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-const sourcePath = path.join(__dirname, 'excel.xlsx');
-const tempPath = path.join('/tmp', 'excel.xlsx');
+// Your Microsoft App credentials
+const TENANT_ID = '6940843a-674d-4941-9ca2-dc5603f278df';
+const CLIENT_ID = '53f1b63e-e169-4121-a255-c0a966ca514e';
+const CLIENT_SECRET = 'qmB8Q~phRIvnOQl5R5WHcLxu3~by0Z2pkqGx9cAq';
+const EXCEL_FILE_ID = 'IQSUM4nCBCV6Qb9EouonniYQAWYCUuKDO82wYx0B2DRX01Q';
+const SHEET_NAME = 'Sheet1'; // adjust if your sheet name is different
 
-app.post('/calculate', async (req, res) => {
-  const { quantity } = req.body;
+const getToken = async () => {
+  const tokenUrl = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
+  const formData = {
+    grant_type: 'client_credentials',
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    scope: 'https://graph.microsoft.com/.default'
+  };
+
+  const response = await axios.post(tokenUrl, qs.stringify(formData), {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    }
+  });
+
+  return response.data.access_token;
+};
+
+const updateCell = async (token, value) => {
+  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('${SHEET_NAME}')/range(address='A2')`;
+
+  await axios.patch(
+    url,
+    { values: [[value]] },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+};
+
+const readCell = async (token) => {
+  const url = `https://graph.microsoft.com/v1.0/me/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('${SHEET_NAME}')/range(address='B2')`;
+
+  const response = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  return response.data.values[0][0];
+};
+
+app.get('/calculate', async (req, res) => {
+  const quantity = req.query.quantity;
+  if (!quantity) return res.status(400).send('Quantity is required');
 
   try {
-    // Copy excel file to /tmp if not there already
-    if (!fs.existsSync(tempPath)) {
-      fs.copyFileSync(sourcePath, tempPath);
-    }
-
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(tempPath);
-    const sheet = workbook.getWorksheet(1);
-
-    // Write quantity to A2
-    sheet.getCell('A2').value = quantity;
-
-    // Simulate calculation (since Excel formulas don't auto-run)
-    const result = quantity * 10;
-
-    // Optional: write result to B2 in Excel file
-    sheet.getCell('B2').value = result;
-    await workbook.xlsx.writeFile(tempPath);
-
-    res.json({ result }); // Send result back to frontend
+    const token = await getToken();
+    await updateCell(token, quantity);
+    const result = await readCell(token);
+    res.json({ result });
   } catch (err) {
-    console.error('Server Error:', err.message);
-    res.status(500).json({ error: 'Server error' });
+    console.error(err.response?.data || err.message);
+    res.status(500).send('Something went wrong');
   }
 });
 
-app.listen(3000, () => {
-  console.log('Server running on port 3000');
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
