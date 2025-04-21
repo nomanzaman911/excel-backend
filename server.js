@@ -1,61 +1,91 @@
-import express from "express";
-import fetch from "isomorphic-fetch";
-import { Client } from "@microsoft/microsoft-graph-client";
-import { ClientSecretCredential } from "@azure/identity";
+const express = require('express');
+const open = require('open');
+const msal = require('@azure/msal-node');
+const { Client } = require('@microsoft/microsoft-graph-client');
+require('isomorphic-fetch');
 
 const app = express();
-const port = 10000;
+const port = 3000;
 
-// HARDCODED CREDENTIALS
-const CLIENT_ID = "53f1b63e-e169-4121-a255-c0a966ca514e";
-const TENANT_ID = "6940843a-674d-4941-9ca2-dc5603f278df";
-const CLIENT_SECRET = "qmB8Q~phRIvnOQl5R5WHcLxu3~by0Z2pkqGx9cAq";
-const EXCEL_FILE_ID = "24C52B39E61CD77F!sc28933942504417abf44a2ea279e2610";
-const USER_EMAIL = "nomanzaman@outlook.com"; // This must match Excel file owner
+// === Azure App Config ===
+const config = {
+  auth: {
+    clientId: '1140a629-6ea1-41ec-9655-d5e1afab2408',
+    authority: 'https://login.microsoftonline.com/6940843a-674d-4941-9ca2-dc5603f278df',
+    clientSecret: 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ',
+  }
+};
 
-// Auth setup
-const credential = new ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET);
-const graphClient = Client.initWithMiddleware({
-  authProvider: {
-    getAccessToken: async () => {
-      const token = await credential.getToken("https://graph.microsoft.com/.default");
-      return token.token;
-    },
-  },
+const REDIRECT_URI = 'http://localhost:3000/auth/callback';
+const SCOPES = ["user.read", "files.readwrite", "offline_access"];
+
+const pca = new msal.ConfidentialClientApplication(config);
+
+let accessToken = null;
+
+// === Step 1: Start Login Flow ===
+app.get('/auth', (req, res) => {
+  const authCodeUrlParams = {
+    scopes: SCOPES,
+    redirectUri: REDIRECT_URI
+  };
+
+  pca.getAuthCodeUrl(authCodeUrlParams).then((response) => {
+    res.redirect(response);
+  }).catch(err => res.status(500).send(err));
 });
 
-app.get("/", (req, res) => {
-  res.send("✅ Excel API Backend is running");
+// === Step 2: Handle Redirect with Auth Code ===
+app.get('/auth/callback', (req, res) => {
+  const tokenRequest = {
+    code: req.query.code,
+    scopes: SCOPES,
+    redirectUri: REDIRECT_URI,
+  };
+
+  pca.acquireTokenByCode(tokenRequest).then((response) => {
+    accessToken = response.accessToken;
+    res.send("✅ Authentication successful. You can now go to /calculate?quantity=5");
+  }).catch(err => res.status(500).send(err));
 });
 
-app.get("/calculate", async (req, res) => {
+// === Step 3: Use Graph API to Access Excel File ===
+app.get('/calculate', async (req, res) => {
+  if (!accessToken) return res.send({ error: "User not authenticated. Go to /auth first." });
+
+  const quantity = parseInt(req.query.quantity || '1');
+
   try {
-    const quantity = req.query.quantity;
-    if (!quantity) return res.status(400).json({ error: "Missing quantity param" });
+    const client = Client.init({
+      authProvider: done => done(null, accessToken)
+    });
 
-    // Update Excel A1 with quantity
-    await graphClient
-      .api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='A1')`)
+    const filePath = '/calculator.xlsx';
+    const sheetName = 'Sheet1';
+    const inputCell = 'A1';
+    const resultCell = 'B1';
+
+    // Update quantity
+    await client
+      .api(`/me/drive/root:${filePath}:/workbook/worksheets('${sheetName}')/range(address='${inputCell}')`)
       .patch({ values: [[quantity]] });
 
-    // Wait briefly for calculation (optional, depending on Excel formula delays)
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Read back calculated result from B1
-    const resultResponse = await graphClient
-      .api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='B1')`)
+    // Read result
+    const result = await client
+      .api(`/me/drive/root:${filePath}:/workbook/worksheets('${sheetName}')/range(address='${resultCell}')`)
       .get();
 
-    console.log("📦 Raw Excel Result:", JSON.stringify(resultResponse, null, 2));
+    res.send({ result: result.values?.[0]?.[0] || "No result returned from Excel" });
 
-    const result = resultResponse?.values?.[0]?.[0];
-    if (result === undefined) return res.status(500).json({ error: "No result returned from Excel" });
-
-    res.json({ result });
-  } catch (error) {
-    console.error("Error:", JSON.stringify(error, null, 2));
-    res.status(500).json({ error: "Failed to calculate result" });
+  } catch (err) {
+    console.error("Error:", JSON.stringify(err, null, 2));
+    res.send({ error: "Failed to calculate result" });
   }
+});
+
+// === Default Route ===
+app.get('/', (req, res) => {
+  res.send("✅ Excel API Backend is running.<br><br>➡️ <a href='/auth'>Click here to log in</a>");
 });
 
 app.listen(port, () => {
