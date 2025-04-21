@@ -1,80 +1,64 @@
-const express = require('express');
-const axios = require('axios');
-const querystring = require('querystring');
-const cors = require('cors');
+import express from 'express';
+import fetch from 'node-fetch';
+import open from 'open';
+
 const app = express();
+const port = 10000;
 
-app.use(cors());
-app.use(express.json());
+// Replace these with your actual app credentials
+const clientId = '1140a629-6ea1-41ec-9655-d5e1afab2408';
+const clientSecret = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
+const tenantId = '6940843a-674d-4941-9ca2-dc5603f278df';
+const redirectUri = 'http://localhost:10000/auth/callback';
+const scopes = 'openid offline_access Files.ReadWrite';
 
-const PORT = 10000;
+let accessToken = null;
 
-// === Credentials (replace only if you regenerate secret) ===
-const CLIENT_ID = '1140a629-6ea1-41ec-9655-d5e1afab2408';
-const CLIENT_SECRET = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
-const TENANT_ID = 'common'; // Use 'common' for personal accounts like Outlook.com
-const REDIRECT_URI = 'http://localhost:3000/auth/callback';
-
-// === Step 1: Redirect user to sign in ===
-app.get('/auth', (req, res) => {
-  const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    response_type: 'code',
-    redirect_uri: REDIRECT_URI,
-    response_mode: 'query',
-    scope: [
-      'https://graph.microsoft.com/Files.ReadWrite',
-      'https://graph.microsoft.com/User.Read',
-      'offline_access',
-      'openid',
-      'profile'
-    ].join(' '),
-  });
-
-  const authUrl = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`;
+app.get('/auth/signin', async (req, res) => {
+  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${encodeURIComponent(scopes)}`;
   res.redirect(authUrl);
 });
 
-// === Step 2: Callback from Microsoft after sign-in ===
 app.get('/auth/callback', async (req, res) => {
   const code = req.query.code;
 
-  try {
-    const tokenResponse = await axios.post(
-      `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
-      querystring.stringify({
-        client_id: CLIENT_ID,
-        scope: [
-          'https://graph.microsoft.com/Files.ReadWrite',
-          'https://graph.microsoft.com/User.Read',
-          'offline_access',
-          'openid',
-          'profile'
-        ].join(' '),
-        code,
-        redirect_uri: REDIRECT_URI,
-        grant_type: 'authorization_code',
-        client_secret: CLIENT_SECRET,
-      }),
-      {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      }
-    );
+  const tokenRes = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      scope: scopes
+    })
+  });
 
-    const accessToken = tokenResponse.data.access_token;
+  const tokenJson = await tokenRes.json();
+  accessToken = tokenJson.access_token;
 
-    res.send(`
-      <h2>✅ Authorization successful!</h2>
-      <p>Access token obtained.</p>
-      <code>${accessToken}</code>
-    `);
-  } catch (error) {
-    console.error('Token error:', error.response?.data || error.message);
-    res.status(500).send('❌ Failed to exchange code for token.');
+  if (accessToken) {
+    res.send('✅ Sign-in complete. You can now use the Excel API!');
+  } else {
+    res.send('❌ Failed to sign in.');
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server listening on port ${PORT}`);
-  console.log(`==> Your service is live 🎉`);
+app.get('/excel/read', async (req, res) => {
+  if (!accessToken) return res.status(401).send('Unauthorized');
+
+  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A1')`;
+
+  const graphRes = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  const data = await graphRes.json();
+  res.json(data);
+});
+
+app.listen(port, () => {
+  console.log(`✅ Server listening on port ${port}`);
+  console.log(`🔗 Open http://localhost:${port}/auth/signin to sign in`);
 });
