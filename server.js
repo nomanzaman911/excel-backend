@@ -2,83 +2,94 @@ const express = require('express');
 const session = require('express-session');
 const axios = require('axios');
 const cors = require('cors');
-const qs = require('querystring');
+const querystring = require('querystring');
 
 const app = express();
 const port = 10000;
 
-const CLIENT_ID = '1140a629-6ea1-41ec-9655-d5e1afab2408';
-const CLIENT_SECRET = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
-const REDIRECT_URI = 'https://excel-backend-1-y1fk.onrender.com/auth/callback';
-const TENANT_ID = 'common'; // works with personal account
-const EXCEL_FILE_PATH = '/calculator.xlsx';
-const INPUT_CELL = 'Sheet1!A1';
-const RESULT_CELL = 'Sheet1!B1';
+const clientId = '1140a629-6ea1-41ec-9655-d5e1afab2408';
+const clientSecret = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
+const redirectUri = 'https://excel-backend-1-y1fk.onrender.com/auth/callback';
+const tenantId = 'common';
 
 app.use(cors({
   origin: 'http://theglowup.com.au',
   credentials: true
 }));
-app.use(express.json());
-app.use(session({ secret: 'excel-secret', resave: false, saveUninitialized: true }));
 
-app.get('/', (req, res) => res.send('✅ Excel API Backend is running'));
+app.use(express.json());
+app.use(session({
+  secret: 'secret',
+  resave: false,
+  saveUninitialized: true
+}));
+
+app.get('/', (req, res) => {
+  res.send('✅ Excel API Backend is running');
+});
 
 app.get('/auth', (req, res) => {
-  const params = qs.stringify({
-    client_id: CLIENT_ID,
+  const params = querystring.stringify({
+    client_id: clientId,
     response_type: 'code',
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri,
     response_mode: 'query',
-    scope: 'openid profile offline_access User.Read Files.ReadWrite',
+    scope: 'offline_access Files.ReadWrite.All',
   });
-  res.redirect(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`);
+  res.redirect(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params}`);
 });
 
 app.get('/auth/callback', async (req, res) => {
   const code = req.query.code;
   try {
-    const response = await axios.post(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
-      qs.stringify({
-        client_id: CLIENT_ID,
-        scope: 'User.Read Files.ReadWrite',
-        code,
-        redirect_uri: REDIRECT_URI,
+    const tokenRes = await axios.post(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+      querystring.stringify({
+        client_id: clientId,
+        scope: 'offline_access Files.ReadWrite.All',
+        code: code,
+        redirect_uri: redirectUri,
         grant_type: 'authorization_code',
-        client_secret: CLIENT_SECRET,
+        client_secret: clientSecret
       }),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
-    req.session.accessToken = response.data.access_token;
-    res.redirect('http://theglowup.com.au'); // redirect back to your site
+
+    req.session.accessToken = tokenRes.data.access_token;
+    res.redirect('http://theglowup.com.au');
   } catch (err) {
+    console.error('Token Error:', err.response?.data || err);
     res.status(500).send('Auth failed');
   }
 });
 
 app.post('/calculate', async (req, res) => {
   const accessToken = req.session.accessToken;
-  const { input } = req.body;
+  const quantity = req.body.quantity;
+
+  if (!accessToken) return res.status(401).json({ error: 'Not signed in' });
+
   try {
-    await axios.patch(
-      `https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('Sheet1')/range(address='${INPUT_CELL}')`,
-      { values: [[input]] },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
+    // Set A1 value in Excel
+    await axios.patch(`https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A1')`, {
+      values: [[quantity]]
+    }, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
 
-    const response = await axios.get(
-      `https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('Sheet1')/range(address='${RESULT_CELL}')`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
+    // Get B1 value from Excel
+    const resultRes = await axios.get(`https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='B1')`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
 
-    const result = response.data.values[0][0];
+    const result = resultRes.data.values?.[0]?.[0];
     res.json({ result });
   } catch (err) {
-    console.error(err.response?.data || err);
+    console.error('Calculation Error:', err.response?.data || err);
     res.status(500).json({ error: 'Failed to calculate result' });
   }
 });
 
 app.listen(port, () => {
   console.log(`✅ Server listening on port ${port}`);
+  console.log('==> Your service is live 🎉');
 });
