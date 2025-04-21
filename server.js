@@ -9,7 +9,7 @@ const port = 10000;
 
 const CLIENT_ID = '1140a629-6ea1-41ec-9655-d5e1afab2408';
 const CLIENT_SECRET = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
-const REDIRECT_URI = 'http://localhost:10000/auth/callback';
+const REDIRECT_URI = 'https://excel-backend-1-y1fk.onrender.com/auth/callback';
 const TENANT_ID = 'common'; // works with personal account
 const EXCEL_FILE_PATH = '/calculator.xlsx';
 const INPUT_CELL = 'Sheet1!A1';
