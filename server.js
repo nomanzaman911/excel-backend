@@ -1,73 +1,122 @@
-const express = require('express');
-const session = require('express-session');
-const { Issuer } = require('openid-client');
-const axios = require('axios');
+const express = require("express");
+const session = require("express-session");
+const fetch = require("node-fetch");
+const querystring = require("querystring");
+const cors = require("cors");
+const bodyParser = require("body-parser");
 
 const app = express();
-app.use(express.json());
+const port = process.env.PORT || 10000;
 
-const clientId = '1140a629-6ea1-41ec-9655-d5e1afab2408';
-const clientSecret = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
-const redirectUri = 'http://localhost:3000/auth/callback'; // Replace with your deployed frontend URI if needed
+// Replace with your actual Azure app info:
+const CLIENT_ID = "1140a629-6ea1-41ec-9655-d5e1afab2408";
+const CLIENT_SECRET = "wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ";
+const TENANT_ID = "common"; // Use 'common' for personal accounts
+const REDIRECT_URI = "http://localhost:3000/auth/callback"; // Or your FreeHosting URL
+const EXCEL_FILE_PATH = "/calculator.xlsx"; // File in root of OneDrive
+const EXCEL_WORKSHEET = "Sheet1";
+const INPUT_CELL = "A1";
+const OUTPUT_CELL = "B1";
+
+app.use(cors());
+app.use(bodyParser.json());
 
 app.use(
   session({
-    secret: 'mysecret',
+    secret: "keyboard cat",
     resave: false,
     saveUninitialized: true,
   })
 );
 
-let client;
-
-(async () => {
-  const microsoftIssuer = await Issuer.discover('https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration');
-  client = new microsoftIssuer.Client({
-    client_id: clientId,
-    client_secret: clientSecret,
-    redirect_uris: [redirectUri],
-    response_types: ['code'],
-  });
-})();
-
-app.get('/auth', (req, res) => {
-  const url = client.authorizationUrl({
-    scope: 'openid profile offline_access Files.ReadWrite',
-  });
-  res.redirect(url);
+app.get("/", (req, res) => {
+  res.send("✅ Excel API Backend is running");
 });
 
-app.get('/auth/callback', async (req, res) => {
-  const params = client.callbackParams(req);
-  const tokenSet = await client.callback(redirectUri, params);
-  req.session.tokenSet = tokenSet;
-  res.send('Signed in! You can close this tab and return to the app.');
+// Step 1: Redirect user to Microsoft login
+app.get("/auth/login", (req, res) => {
+  const params = querystring.stringify({
+    client_id: CLIENT_ID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    response_mode: "query",
+    scope: "openid profile offline_access User.Read Files.ReadWrite",
+  });
+  res.redirect(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`);
 });
 
-app.post('/calculate', async (req, res) => {
+// Step 2: Handle redirect & exchange code for access token
+app.get("/auth/callback", async (req, res) => {
+  const code = req.query.code;
+  const tokenParams = {
+    client_id: CLIENT_ID,
+    scope: "https://graph.microsoft.com/.default",
+    code: code,
+    redirect_uri: REDIRECT_URI,
+    grant_type: "authorization_code",
+    client_secret: CLIENT_SECRET,
+  };
+
   try {
-    const token = req.session.tokenSet?.access_token;
-    if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-    const workbookUrl = `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A1')`;
-
-    await axios.patch(workbookUrl, { values: [[req.body.quantity]] }, {
-      headers: { Authorization: `Bearer ${token}` },
+    const tokenRes = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: querystring.stringify(tokenParams),
     });
 
-    const response = await axios.get(
-      `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='B1')`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    const tokenData = await tokenRes.json();
+    if (tokenData.error) throw new Error(JSON.stringify(tokenData));
 
-    const result = response.data.values[0][0];
-    res.json({ result });
+    req.session.access_token = tokenData.access_token;
+    console.log("✅ Access token obtained.");
+
+    // ✅ Redirect to frontend after login
+    res.redirect("http://theglowup.com.au/index.html"); // <-- Replace this with your real frontend URL
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ error: 'Calculation failed' });
+    console.error("❌ Auth error:", err);
+    res.status(500).send("Authentication failed.");
   }
 });
 
-app.listen(10000, () => {
-  console.log('✅ Server listening on port 10000');
+// Step 3: Handle Excel calculation
+app.post("/calculate", async (req, res) => {
+  const token = req.session.access_token;
+  const quantity = req.body.quantity;
+
+  if (!token) return res.status(401).json({ error: "Not authenticated" });
+
+  try {
+    // 1. Update input cell
+    await fetch(`https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('${EXCEL_WORKSHEET}')/range(address='${INPUT_CELL}')`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ values: [[quantity]] }),
+    });
+
+    // 2. Get result from output cell
+    const resultRes = await fetch(`https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('${EXCEL_WORKSHEET}')/range(address='${OUTPUT_CELL}')`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const resultData = await resultRes.json();
+    const result = resultData.values?.[0]?.[0];
+
+    if (result === undefined) {
+      return res.status(500).json({ error: "No result returned from Excel" });
+    }
+
+    res.json({ result });
+  } catch (err) {
+    console.error("❌ Excel error:", err);
+    res.status(500).json({ error: "Failed to calculate result" });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`✅ Server listening on port ${port}`);
 });
