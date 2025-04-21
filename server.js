@@ -1,114 +1,102 @@
-const express = require("express");
-const session = require("express-session");
-const axios = require("axios");
-const cors = require("cors");
-const qs = require("querystring");
-
+const express = require('express');
+const session = require('express-session');
+const axios = require('axios');
+const cors = require('cors');
+const querystring = require('querystring');
 const app = express();
 const port = 10000;
 
-const clientId = "1140a629-6ea1-41ec-9655-d5e1afab2408";
-const clientSecret = "wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ";
-const tenantId = "common"; // Use 'common' for personal Microsoft accounts
-const redirectUri = "http://localhost:3000/auth/callback"; // This must match Azure app settings
-const excelFilePath = "/drive/root:/calculator.xlsx"; // Your file is in OneDrive root
-
-app.use(express.json());
-
-// ✅ CORS FIX
+// Allow requests from your frontend domain
 app.use(cors({
-  origin: "http://theglowup.com.au",
+  origin: 'http://theglowup.com.au',
   credentials: true
 }));
 
-// ✅ SESSION
+app.use(express.json());
 app.use(session({
-  secret: "keyboard cat",
+  secret: 'excel-secret',
   resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: false,
-    httpOnly: true,
-    sameSite: "lax"
-  }
+  saveUninitialized: true
 }));
 
-// ✅ Home
-app.get("/", (req, res) => {
-  res.send("✅ Excel API Backend is running");
+// Replace with your own values
+const CLIENT_ID = '1140a629-6ea1-41ec-9655-d5e1afab2408';
+const CLIENT_SECRET = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
+const REDIRECT_URI = 'http://localhost:3000/auth/callback'; // Same as registered in Azure
+const TENANT = 'common'; // or use your tenant ID
+const EXCEL_FILE_PATH = '/calculator.xlsx'; // Must be in OneDrive root
+const WORKSHEET = 'Sheet1'; // Sheet name
+
+let userAccessToken = null;
+
+// Auth endpoint to redirect to Microsoft login
+app.get('/auth', (req, res) => {
+  const params = querystring.stringify({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    response_mode: 'query',
+    scope: 'offline_access Files.ReadWrite User.Read',
+  });
+  res.redirect(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/authorize?${params}`);
 });
 
-// ✅ Step 1: Redirect to Microsoft Login
-app.get("/auth", (req, res) => {
-  const authUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?` +
-    qs.stringify({
-      client_id: clientId,
-      response_type: "code",
-      redirect_uri: redirectUri,
-      response_mode: "query",
-      scope: "Files.ReadWrite offline_access",
-    });
-  res.redirect(authUrl);
-});
-
-// ✅ Step 2: Callback from Microsoft with auth code
-app.get("/auth/callback", async (req, res) => {
+// Callback after login
+app.get('/auth/callback', async (req, res) => {
   const code = req.query.code;
-  try {
-    const tokenResponse = await axios.post(
-      `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-      qs.stringify({
-        client_id: clientId,
-        scope: "Files.ReadWrite offline_access",
-        code: code,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-        client_secret: clientSecret,
-      }),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
+  if (!code) return res.status(400).send('No code provided');
 
-    req.session.accessToken = tokenResponse.data.access_token;
-    res.redirect("http://theglowup.com.au"); // ✅ Go back to your frontend
+  try {
+    const tokenResponse = await axios.post(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`, querystring.stringify({
+      client_id: CLIENT_ID,
+      scope: 'offline_access Files.ReadWrite User.Read',
+      code: code,
+      redirect_uri: REDIRECT_URI,
+      grant_type: 'authorization_code',
+      client_secret: CLIENT_SECRET
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+
+    userAccessToken = tokenResponse.data.access_token;
+    res.send('✅ Signed in successfully! You can now use the calculator.');
   } catch (err) {
-    console.error("Token exchange failed", err.response?.data || err.message);
-    res.status(500).send("Auth failed");
+    console.error('Token error:', err.response?.data || err.message);
+    res.status(500).send('Error getting token');
   }
 });
 
-// ✅ Calculate endpoint (POST)
-app.post("/calculate", async (req, res) => {
-  const token = req.session.accessToken;
+// Calculation route
+app.post('/calculate', async (req, res) => {
   const quantity = req.body.quantity;
-
-  if (!token) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
+  if (!userAccessToken) return res.status(401).send('Not signed in');
 
   try {
-    // Write input to Excel
-    await axios.patch(
-      `https://graph.microsoft.com/v1.0/me${excelFilePath}:/workbook/worksheets('Sheet1')/range(address='A1')`,
-      { values: [[quantity]] },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    // Update quantity cell A1
+    await axios.patch(`https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('${WORKSHEET}')/range(address='A1')`, {
+      values: [[quantity]]
+    }, {
+      headers: { Authorization: `Bearer ${userAccessToken}` }
+    });
 
-    // Read calculated result from Excel
-    const resultResponse = await axios.get(
-      `https://graph.microsoft.com/v1.0/me${excelFilePath}:/workbook/worksheets('Sheet1')/range(address='B1')`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    // Read calculated result from B1
+    const resultResponse = await axios.get(`https://graph.microsoft.com/v1.0/me/drive/root:${EXCEL_FILE_PATH}:/workbook/worksheets('${WORKSHEET}')/range(address='B1')`, {
+      headers: { Authorization: `Bearer ${userAccessToken}` }
+    });
 
     const result = resultResponse.data.values[0][0];
     res.json({ result });
   } catch (err) {
-    console.error("Excel interaction failed", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to calculate result" });
+    console.error('Calculation error:', err.response?.data || err.message);
+    res.status(500).send({ error: 'Failed to calculate result' });
   }
 });
 
-// ✅ Start the server
+// Test route
+app.get('/', (req, res) => {
+  res.send('✅ Excel API Backend is running');
+});
+
 app.listen(port, () => {
   console.log(`✅ Server listening on port ${port}`);
-  console.log("==> Your service is live 🎉");
 });
