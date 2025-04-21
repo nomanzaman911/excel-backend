@@ -1,93 +1,80 @@
 const express = require('express');
-const fetch = require('isomorphic-fetch');
-const msal = require('@azure/msal-node');
-const graph = require('@microsoft/microsoft-graph-client');
-
+const axios = require('axios');
+const querystring = require('querystring');
+const cors = require('cors');
 const app = express();
+
+app.use(cors());
 app.use(express.json());
 
-const config = {
-  auth: {
-    clientId: "1140a629-6ea1-41ec-9655-d5e1afab2408",
-    authority: "https://login.microsoftonline.com/common",
-    clientSecret: "wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ"
-  }
-};
+const PORT = 10000;
 
-const REDIRECT_URI = "http://localhost:3000/auth/callback";
-const pca = new msal.ConfidentialClientApplication(config);
+// === Credentials (replace only if you regenerate secret) ===
+const CLIENT_ID = '1140a629-6ea1-41ec-9655-d5e1afab2408';
+const CLIENT_SECRET = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
+const TENANT_ID = 'common'; // Use 'common' for personal accounts like Outlook.com
+const REDIRECT_URI = 'http://localhost:3000/auth/callback';
 
-// Redirect user to Microsoft login
-app.get("/auth", (req, res) => {
-  const authCodeUrlParams = {
-    scopes: ["https://graph.microsoft.com/.default", "offline_access", "Files.ReadWrite"],
-    redirectUri: REDIRECT_URI
-  };
-
-  pca.getAuthCodeUrl(authCodeUrlParams).then(url => {
-    res.redirect(url);
+// === Step 1: Redirect user to sign in ===
+app.get('/auth', (req, res) => {
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    response_mode: 'query',
+    scope: [
+      'https://graph.microsoft.com/Files.ReadWrite',
+      'https://graph.microsoft.com/User.Read',
+      'offline_access',
+      'openid',
+      'profile'
+    ].join(' '),
   });
+
+  const authUrl = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?${params}`;
+  res.redirect(authUrl);
 });
 
-// Receive auth code and exchange for token
-let accessToken = null;
-
-app.get("/auth/callback", async (req, res) => {
-  const tokenRequest = {
-    code: req.query.code,
-    scopes: ["https://graph.microsoft.com/.default", "offline_access", "Files.ReadWrite"],
-    redirectUri: REDIRECT_URI
-  };
+// === Step 2: Callback from Microsoft after sign-in ===
+app.get('/auth/callback', async (req, res) => {
+  const code = req.query.code;
 
   try {
-    const response = await pca.acquireTokenByCode(tokenRequest);
-    accessToken = response.accessToken;
-    res.send("✅ Authentication complete! You can now send calculation requests.");
-  } catch (err) {
-    console.error("Auth error:", err);
-    res.status(500).send("Auth failed");
+    const tokenResponse = await axios.post(
+      `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
+      querystring.stringify({
+        client_id: CLIENT_ID,
+        scope: [
+          'https://graph.microsoft.com/Files.ReadWrite',
+          'https://graph.microsoft.com/User.Read',
+          'offline_access',
+          'openid',
+          'profile'
+        ].join(' '),
+        code,
+        redirect_uri: REDIRECT_URI,
+        grant_type: 'authorization_code',
+        client_secret: CLIENT_SECRET,
+      }),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+
+    res.send(`
+      <h2>✅ Authorization successful!</h2>
+      <p>Access token obtained.</p>
+      <code>${accessToken}</code>
+    `);
+  } catch (error) {
+    console.error('Token error:', error.response?.data || error.message);
+    res.status(500).send('❌ Failed to exchange code for token.');
   }
 });
 
-// Excel Calculation API
-app.post("/calculate", async (req, res) => {
-  if (!accessToken) return res.status(401).send({ error: "Not authenticated" });
-
-  const { quantity } = req.body;
-
-  try {
-    const client = graph.Client.init({
-      authProvider: (done) => done(null, accessToken)
-    });
-
-    // Adjust path to your file and cells
-    const drivePath = "/me/drive/root:/calculator.xlsx";
-    const worksheet = "Sheet1";
-    const inputCell = "A1";
-    const outputCell = "B1";
-
-    // Update input value
-    await client
-      .api(`${drivePath}:/workbook/worksheets('${worksheet}')/range(address='${inputCell}')`)
-      .patch({ values: [[quantity]] });
-
-    // Get calculated result
-    const result = await client
-      .api(`${drivePath}:/workbook/worksheets('${worksheet}')/range(address='${outputCell}')`)
-      .get();
-
-    const calculatedValue = result.values?.[0]?.[0];
-
-    if (calculatedValue !== undefined) {
-      res.send({ result: calculatedValue });
-    } else {
-      res.status(500).send({ error: "No result returned from Excel" });
-    }
-  } catch (err) {
-    console.error("Excel error:", err);
-    res.status(500).send({ error: "Failed to calculate result" });
-  }
+app.listen(PORT, () => {
+  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`==> Your service is live 🎉`);
 });
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`✅ Server listening on port ${PORT}`));
