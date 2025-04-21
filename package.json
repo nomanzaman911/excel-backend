@@ -1,14 +1,16 @@
 {
   "name": "excel-backend",
   "version": "1.0.0",
-  "description": "Excel API Backend",
+  "description": "Backend to access Excel file via Microsoft Graph API",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "@microsoft/microsoft-graph-client": "^3.0.0",
+    "@azure/identity": "^3.3.0",
     "express": "^4.18.2",
-    "body-parser": "^1.20.2",
-    "node-fetch": "^2.6.9"
+    "isomorphic-fetch": "^3.0.0"
   }
 }
