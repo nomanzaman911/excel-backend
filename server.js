@@ -1,87 +1,63 @@
-const express = require("express");
-const fetch = require("isomorphic-fetch");
-const { Client } = require("@microsoft/microsoft-graph-client");
-require("isomorphic-fetch");
+import express from "express";
+import fetch from "isomorphic-fetch";
+import { Client } from "@microsoft/microsoft-graph-client";
+import { ClientSecretCredential } from "@azure/identity";
 
 const app = express();
-const port = process.env.PORT || 10000;
+const port = 10000;
 
-// Config values (hardcoded)
+// HARDCODED CREDENTIALS
 const CLIENT_ID = "53f1b63e-e169-4121-a255-c0a966ca514e";
 const TENANT_ID = "6940843a-674d-4941-9ca2-dc5603f278df";
 const CLIENT_SECRET = "qmB8Q~phRIvnOQl5R5WHcLxu3~by0Z2pkqGx9cAq";
 const EXCEL_FILE_ID = "24C52B39E61CD77F!sc28933942504417abf44a2ea279e2610";
-const USER_EMAIL = "nomanzaman@outlook.com";
+const USER_EMAIL = "nomanzaman@outlook.com"; // This must match Excel file owner
 
-// Token retrieval
-async function getAccessToken() {
-  const url = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
-
-  const params = new URLSearchParams();
-  params.append("client_id", CLIENT_ID);
-  params.append("scope", "https://graph.microsoft.com/.default");
-  params.append("client_secret", CLIENT_SECRET);
-  params.append("grant_type", "client_credentials");
-
-  const response = await fetch(url, {
-    method: "POST",
-    body: params,
-  });
-
-  const data = await response.json();
-  return data.access_token;
-}
-
-// Graph client setup
-async function getGraphClient() {
-  const token = await getAccessToken();
-
-  const client = Client.init({
-    authProvider: (done) => {
-      done(null, token);
+// Auth setup
+const credential = new ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET);
+const graphClient = Client.initWithMiddleware({
+  authProvider: {
+    getAccessToken: async () => {
+      const token = await credential.getToken("https://graph.microsoft.com/.default");
+      return token.token;
     },
-  });
-
-  return client;
-}
-
-// Route to calculate
-app.get("/calculate", async (req, res) => {
-  const quantity = parseFloat(req.query.quantity);
-
-  try {
-    const client = await getGraphClient();
-
-    // Update input cell (A1)
-    await client.api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='A1')`)
-      .patch({
-        values: [[quantity]],
-      });
-
-    // Get result from cell (B1)
-    const result = await client
-      .api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='B1')`)
-      .get();
-
-    console.log("📦 Raw Excel Result:", JSON.stringify(result, null, 2)); // 🧠 Debug log
-
-    const calculatedValue = result?.values?.[0]?.[0];
-
-    if (calculatedValue !== undefined && calculatedValue !== null) {
-      res.json({ result: calculatedValue });
-    } else {
-      res.status(500).json({ error: "No result returned from Excel" });
-    }
-  } catch (error) {
-    console.error("❌ Error:", error);
-    res.status(500).json({ error: "Failed to calculate result" });
-  }
+  },
 });
 
 app.get("/", (req, res) => {
   res.send("✅ Excel API Backend is running");
 });
 
+app.get("/calculate", async (req, res) => {
+  try {
+    const quantity = req.query.quantity;
+    if (!quantity) return res.status(400).json({ error: "Missing quantity param" });
+
+    // Update Excel A1 with quantity
+    await graphClient
+      .api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='A1')`)
+      .patch({ values: [[quantity]] });
+
+    // Wait briefly for calculation (optional, depending on Excel formula delays)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Read back calculated result from B1
+    const resultResponse = await graphClient
+      .api(`/users/${USER_EMAIL}/drive/items/${EXCEL_FILE_ID}/workbook/worksheets('Sheet1')/range(address='B1')`)
+      .get();
+
+    console.log("📦 Raw Excel Result:", JSON.stringify(resultResponse, null, 2));
+
+    const result = resultResponse?.values?.[0]?.[0];
+    if (result === undefined) return res.status(500).json({ error: "No result returned from Excel" });
+
+    res.json({ result });
+  } catch (error) {
+    console.error("Error:", JSON.stringify(error, null, 2));
+    res.status(500).json({ error: "Failed to calculate result" });
+  }
+});
+
 app.listen(port, () => {
-  console.log(`🚀 Server listening on port ${port}`);
+  console.log(`✅ Server listening on port ${port}`);
 });
