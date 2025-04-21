@@ -1,64 +1,73 @@
-import express from 'express';
-import fetch from 'node-fetch';
-import open from 'open';
+const express = require('express');
+const session = require('express-session');
+const { Issuer } = require('openid-client');
+const axios = require('axios');
 
 const app = express();
-const port = 10000;
+app.use(express.json());
 
-// Replace these with your actual app credentials
 const clientId = '1140a629-6ea1-41ec-9655-d5e1afab2408';
 const clientSecret = 'wR18Q~Yo~udBKwLQDdAF~dT2JphoPZFEJKxdMdtJ';
-const tenantId = '6940843a-674d-4941-9ca2-dc5603f278df';
-const redirectUri = 'http://localhost:10000/auth/callback';
-const scopes = 'openid offline_access Files.ReadWrite';
+const redirectUri = 'http://localhost:3000/auth/callback'; // Replace with your deployed frontend URI if needed
 
-let accessToken = null;
+app.use(
+  session({
+    secret: 'mysecret',
+    resave: false,
+    saveUninitialized: true,
+  })
+);
 
-app.get('/auth/signin', async (req, res) => {
-  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${encodeURIComponent(scopes)}`;
-  res.redirect(authUrl);
+let client;
+
+(async () => {
+  const microsoftIssuer = await Issuer.discover('https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration');
+  client = new microsoftIssuer.Client({
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uris: [redirectUri],
+    response_types: ['code'],
+  });
+})();
+
+app.get('/auth', (req, res) => {
+  const url = client.authorizationUrl({
+    scope: 'openid profile offline_access Files.ReadWrite',
+  });
+  res.redirect(url);
 });
 
 app.get('/auth/callback', async (req, res) => {
-  const code = req.query.code;
+  const params = client.callbackParams(req);
+  const tokenSet = await client.callback(redirectUri, params);
+  req.session.tokenSet = tokenSet;
+  res.send('Signed in! You can close this tab and return to the app.');
+});
 
-  const tokenRes = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirectUri,
-      scope: scopes
-    })
-  });
+app.post('/calculate', async (req, res) => {
+  try {
+    const token = req.session.tokenSet?.access_token;
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const tokenJson = await tokenRes.json();
-  accessToken = tokenJson.access_token;
+    const workbookUrl = `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A1')`;
 
-  if (accessToken) {
-    res.send('✅ Sign-in complete. You can now use the Excel API!');
-  } else {
-    res.send('❌ Failed to sign in.');
+    await axios.patch(workbookUrl, { values: [[req.body.quantity]] }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const response = await axios.get(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='B1')`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    const result = response.data.values[0][0];
+    res.json({ result });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ error: 'Calculation failed' });
   }
 });
 
-app.get('/excel/read', async (req, res) => {
-  if (!accessToken) return res.status(401).send('Unauthorized');
-
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/calculator.xlsx:/workbook/worksheets('Sheet1')/range(address='A1')`;
-
-  const graphRes = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-
-  const data = await graphRes.json();
-  res.json(data);
-});
-
-app.listen(port, () => {
-  console.log(`✅ Server listening on port ${port}`);
-  console.log(`🔗 Open http://localhost:${port}/auth/signin to sign in`);
+app.listen(10000, () => {
+  console.log('✅ Server listening on port 10000');
 });
